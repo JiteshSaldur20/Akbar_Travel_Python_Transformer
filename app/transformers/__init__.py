@@ -1,0 +1,1 @@
+"""Transformer package: canonical home <-> provider payload converters."""

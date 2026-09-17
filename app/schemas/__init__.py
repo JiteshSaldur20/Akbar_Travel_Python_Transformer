@@ -1,0 +1,1 @@
+"""Schema package: wire contracts for the connector and home payloads."""

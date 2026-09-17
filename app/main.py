@@ -1,102 +1,66 @@
-"""FastAPI layer: HTTP endpoints for the transformation-only service.
+"""FastAPI application entrypoint.
 
-FastAPI is only the HTTP framework. Body decoding/validation is done
-with msgspec; the response is the raw Sabre request payload that Java
-should POST to Sabre. There are NO outbound API calls from this
-service: Python transforms, Java calls Sabre.
-
-Endpoint: POST /api/flights/search
+Run locally with the venv:
+    .venv/Scripts/python -m uvicorn app.main:app --reload
 """
 
-from typing import Any
+import logging
+from contextlib import asynccontextmanager
+from typing import Iterator
 
-import msgspec
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI
 
-from app.config.settings import Settings, get_settings
-from app.exceptions.integration import ConnectorError
-from app.logging_config import configure_logging, get_logger
-from app.services.flight_search import FlightSearchService
-
-logger = get_logger(__name__)
+from app.api.search import close_sabre_client
+from app.api.search import router as search_router
+from app.core.config import get_settings
+from app.core.exceptions import register_exception_handlers
+from app.transformers.router import known_providers
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
-    """Application factory (used by prod entrypoint and tests)."""
-    resolved_settings = settings or get_settings()
-    configure_logging()
+def _configure_logging(debug: bool) -> None:
+    """Make the app's own log records visible under plain uvicorn.
+
+    Uvicorn only configures its own loggers, so without this the root logger
+    stays at WARNING and ``logger.info(...)`` from the app would be dropped.
+    """
+    level = logging.DEBUG if debug else logging.INFO
+
+    if not logging.getLogger().handlers:
+        logging.basicConfig(
+            level=level,
+            format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+        )
+
+    logging.getLogger("app").setLevel(level)
+
+
+def create_app() -> FastAPI:
+    settings = get_settings()
+    _configure_logging(settings.debug)
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> Iterator[None]:
+        yield
+        # Release pooled provider connections on shutdown.
+        close_sabre_client()
 
     app = FastAPI(
-        title="Sabre Request Transformer",
-        description=(
-            "Transformation-only provider connector service: receives the "
-            "common Home Payload from Java and returns the Sabre request "
-            "payload. Java makes the actual Sabre API request and owns "
-            "credentials/authentication."
-        ),
-        version="2.0.0",
+        title=settings.app_name,
+        version="1.1.0",
+        debug=settings.debug,
+        lifespan=lifespan,
     )
-
-    search_service = FlightSearchService(resolved_settings)
-
-    # Stored on state so tests can swap in a mocked service.
-    app.state.settings = resolved_settings
-    app.state.search_service = search_service
-
-    @app.post("/api/flights/search")
-    async def search_flights(request: Request) -> JSONResponse:
-        """Transform a Home Payload into the Sabre request payload."""
-        body = await request.body()
-        return _run_transform(request.app.state.search_service, body)
+    register_exception_handlers(app)
+    app.include_router(search_router, prefix=settings.api_prefix)
 
     @app.get("/health")
-    def health(request: Request) -> dict[str, str]:
-        """Liveness probe."""
+    async def health() -> dict[str, object]:
         return {
-            "status": "UP",
-            "service": request.app.state.settings.service_name,
+            "status": "ok",
+            "providers": known_providers(),
         }
 
-    @app.exception_handler(ConnectorError)
-    async def connector_error_handler(
-        _request: Request, exc: ConnectorError
-    ) -> JSONResponse:
-        """Map controlled transformation errors to controlled responses."""
-        logger.error("Transformation error: %s (%s)", exc.message, exc.error_code)
-        return JSONResponse(
-            status_code=exc.status_code,
-            content={
-                "success": False,
-                "errorCode": exc.error_code,
-                "message": exc.message,
-            },
-        )
-
     return app
-
-
-def _run_transform(
-    search_service: FlightSearchService,
-    body: bytes,
-) -> JSONResponse:
-    """Run the transformation pipeline and return the raw Sabre body."""
-    try:
-        result = search_service.transform(body)
-    except ConnectorError:
-        raise  # handled by the registered exception handler
-    except Exception:
-        logger.exception("Unexpected error during transformation")
-        return JSONResponse(
-            status_code=500,
-            content={
-                "success": False,
-                "errorCode": "INTERNAL_ERROR",
-                "message": "Unexpected transformation error",
-            },
-        )
-
-    return JSONResponse(status_code=200, content=result)
 
 
 app = create_app()

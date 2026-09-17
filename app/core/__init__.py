@@ -1,0 +1,1 @@
+"""Core package: configuration, exceptions, and shared primitives."""

@@ -1,0 +1,1 @@
+"""Connector package: outbound provider (Sabre BFM) and Java ORBiS auth clients."""
