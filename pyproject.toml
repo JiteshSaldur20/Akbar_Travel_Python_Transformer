@@ -1,0 +1,9 @@
+[project]
+name = "sabre-flight-connector"
+version = "1.0.0"
+description = "Independent Sabre provider connector implementing FLIGHT_SEARCH for the Java backend"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
