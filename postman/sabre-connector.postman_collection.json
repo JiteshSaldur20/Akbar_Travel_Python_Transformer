@@ -1,0 +1,337 @@
+{
+	"info": {
+		"_postman_id": "c2f3a4b5-d6e7-4f80-9a1b-2c3d4e5f6071",
+		"name": "Provider Transformer - Sabre Connector",
+		"description": "Test collection for the Sabre provider-transformer service (FastAPI + msgspec).\n\n1. Start the server:\n   ./env/Scripts/python -m uvicorn app.main:app --host 0.0.0.0 --port 8090\n2. Run requests in this collection.\n\nORBiS connector contract (Java calls this):\n- POST /api/flights/search : common payload -> Sabre BFM request -> raw BFM response\n\nTransform endpoints (bare home payloads, Sabre only):\n- POST /transform/{provider}          : home payload -> Sabre BFM request\n- POST /transform/{provider}/response : Sabre BFM response -> HOME RESPONSE\n- GET  /providers                     : registered providers\n- GET  /health                        : health check\n\nThe home response is the same shape the Akasa connector produces, so the frontend\nreceives one structure from every provider.",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"variable": [
+		{
+			"key": "base_url",
+			"value": "http://127.0.0.1:8090",
+			"type": "string"
+		},
+		{
+			"key": "sabre_engine_url",
+			"value": "https://api.cert.platform.sabre.com/v5/offers/shop",
+			"type": "string"
+		},
+		{
+			"key": "pcc",
+			"value": "86AD",
+			"type": "string"
+		},
+		{
+			"key": "origin",
+			"value": "BOM",
+			"type": "string"
+		},
+		{
+			"key": "destination",
+			"value": "DEL",
+			"type": "string"
+		},
+		{
+			"key": "departure_date",
+			"value": "2026-11-06",
+			"type": "string"
+		},
+		{
+			"key": "paxADT",
+			"value": "2",
+			"type": "string"
+		},
+		{
+			"key": "paxCHD",
+			"value": "1",
+			"type": "string"
+		},
+		{
+			"key": "paxINFT",
+			"value": "0",
+			"type": "string"
+		}
+	],
+	"item": [
+		{
+			"name": "Health & Providers",
+			"item": [
+				{
+					"name": "Health check",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/health",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"health"
+							]
+						},
+						"description": "Liveness of the connector service."
+					},
+					"response": []
+				},
+				{
+					"name": "List providers",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/providers",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"providers"
+							]
+						},
+						"description": "Providers this connector can transform. Expect [\"sabre\"]."
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "ORBiS Connector (Java calls this)",
+			"item": [
+				{
+					"name": "Connector request -> Sabre search",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\": \"FLIGHT_SEARCH\",\n  \"from\": \"{{origin}}\",\n  \"to\": \"{{destination}}\",\n  \"dateFrom\": \"{{departure_date}}\",\n  \"dateTo\": \"2026-11-11\",\n  \"tripType\": \"ONE_WAY\",\n  \"ADT\": 2,\n  \"CHD\": 1,\n  \"INF\": 0,\n  \"currency\": \"INR\",\n  \"cabin\": \"ECONOMY\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/api/flights/search",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"flights",
+								"search"
+							]
+						},
+						"description": "The common ORBiS payload (what Java forwards). The connector builds the BFM request, fetches the token + PCC from Java ORBiS, and answers in the canonical HOME RESPONSE format - the same structure /transform/sabre/response produces, so Sabre's own field names never reach the caller. tripType=ONE_WAY means no return leg is shopped, which roughly halves BFM's work."
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Sabre",
+			"item": [
+				{
+					"name": "Home request -> Sabre request",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"originCode\": \"BOM\",\n  \"destinationCode\": \"DEL\",\n  \"departureDate\": \"2026-11-06\",\n  \"returnDate\": \"2026-11-11\",\n  \"cabinClass\": \"ECONOMY\",\n  \"currency\": \"INR\",\n  \"passengers\": [\n    { \"passengerType\": \"ADT\", \"count\": 2 },\n    { \"passengerType\": \"CHD\", \"count\": 1 }\n  ]\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/transform/sabre",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"transform",
+								"sabre"
+							]
+						},
+						"description": "Canonical home request -> Sabre BFM (OTA_AirLowFareSearchRQ) body. The PCC comes from Java ORBiS; without it the transform fails fast rather than sending an invalid BFM request."
+					},
+					"response": []
+				},
+				{
+					"name": "Sabre response -> Home response",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"groupedItineraryResponse\": {\n    \"version\": \"5.2.0\",\n    \"scheduleDescs\": [\n      {\n        \"id\": 7,\n        \"frequency\": \"SM*W*F*\",\n        \"stopCount\": 0,\n        \"eTicketable\": true,\n        \"totalMilesFlown\": 1058,\n        \"elapsedTime\": 175,\n        \"departure\": {\n          \"airport\": \"BLR\",\n          \"city\": \"BLR\",\n          \"country\": \"IN\",\n          \"time\": \"00:15:00+05:30\",\n          \"terminal\": \"2\"\n        },\n        \"arrival\": {\n          \"airport\": \"DEL\",\n          \"city\": \"DEL\",\n          \"country\": \"IN\",\n          \"time\": \"03:10:00+05:30\",\n          \"terminal\": \"3\"\n        },\n        \"carrier\": {\n          \"marketing\": \"AI\",\n          \"marketingFlightNumber\": 2758,\n          \"operating\": \"AI\",\n          \"operatingFlightNumber\": 2758,\n          \"equipment\": {\n            \"code\": \"32N\",\n            \"typeForFirstLeg\": \"N\",\n            \"typeForLastLeg\": \"N\"\n          }\n        }\n      }\n    ],\n    \"legDescs\": [\n      {\n        \"id\": 1,\n        \"elapsedTime\": 175,\n        \"schedules\": [\n          {\n            \"ref\": 7\n          }\n        ]\n      }\n    ],\n    \"fareComponentDescs\": [\n      {\n        \"id\": 1,\n        \"fareBasisCode\": \"TU1YXSII\",\n        \"cabinCode\": \"Y\",\n        \"bookingCode\": \"Y\",\n        \"segments\": [\n          {\n            \"segment\": {\n              \"bookingCode\": \"Y\",\n              \"cabinCode\": \"Y\"\n            }\n          }\n        ]\n      }\n    ],\n    \"itineraryGroups\": [\n      {\n        \"groupDescription\": {\n          \"legDescriptions\": [\n            {\n              \"departureDate\": \"2026-11-06\",\n              \"departureLocation\": \"BLR\",\n              \"arrivalLocation\": \"DEL\"\n            }\n          ]\n        },\n        \"itineraries\": [\n          {\n            \"id\": 1,\n            \"legs\": [\n              {\n                \"ref\": 1\n              }\n            ],\n            \"pricingInformation\": [\n              {\n                \"fare\": {\n                  \"totalFare\": {\n                    \"amount\": 20634.0,\n                    \"currency\": \"INR\"\n                  },\n                  \"fareComponents\": [\n                    {\n                      \"ref\": 1\n                    }\n                  ],\n                  \"passengerInfoList\": [\n                    {\n                      \"passengerInfo\": {\n                        \"passengerType\": \"ADT\",\n                        \"passengerNumber\": 2,\n                        \"nonRefundable\": false,\n                        \"passengerTotalFare\": {\n                          \"totalFare\": 20634.0,\n                          \"baseFareAmount\": 16678.0,\n                          \"totalTaxAmount\": 3956.0,\n                          \"baseFareCurrency\": \"INR\",\n                          \"currency\": \"INR\"\n                        },\n                        \"fareComponents\": [\n                          {\n                            \"ref\": 1\n                          }\n                        ]\n                      }\n                    }\n                  ]\n                }\n              }\n            ]\n          }\n        ]\n      }\n    ]\n  }\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/transform/sabre/response",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"transform",
+								"sabre",
+								"response"
+							]
+						},
+						"description": "Sabre BFM groupedItineraryResponse -> canonical HOME RESPONSE. One result per (itinerary, priced fare) pair, in the same shape every provider produces. References are resolved rather than assumed: legs[].ref -> legDescs -> scheduleRefs -> scheduleDescs, and fareComponents[].ref -> fareComponentDescs. Field names differ from Akasa's, but the OUTPUT is the same.\n\nFields Sabre does not state: isSumOfSector is always null (BFM has no such flag) and baggage comes back null when the allowance is pieces-only, because the home field carries weight/unit."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"const res = pm.response.json();",
+									"const HOME_FIELDS = ['id','provider','from','to','departureDate','arrivalDate','departureTime','arrivalTime','airline','flightNumber','aircraft','stops','duration','cabin','bookingClass','fareBasisCode','seatsAvailable','refundable','baggage','ADT','CHD','INF','totalPrice','journeyKey','segmentKey','fareAvailabilityKey','isSumOfSector'].sort();",
+									"pm.test('200 OK', () => pm.response.to.have.status(200));",
+									"pm.test('home response envelope', () => {",
+									"  pm.expect(Object.keys(res).sort()).to.eql(['currency','operation','results','searchId']);",
+									"  pm.expect(res.operation).to.eql('FLIGHT_SEARCH');",
+									"  pm.expect(res.currency).to.eql('INR');",
+									"  pm.expect(res.searchId).to.be.null;",
+									"});",
+									"pm.test('one result per (itinerary, priced fare) pair', () => pm.expect(res.results).to.have.lengthOf(1));",
+									"const r = res.results[0];",
+									"pm.test('every result carries exactly the home fields', () => pm.expect(Object.keys(r).sort()).to.eql(HOME_FIELDS));",
+									"pm.test('journey identity and clock times', () => {",
+									"  pm.expect(r.provider).to.eql('SABRE');",
+									"  pm.expect(r.from).to.eql('BOM');",
+									"  pm.expect(r.to).to.eql('DEL');",
+									"  pm.expect(r.departureDate).to.eql('2026-11-06');",
+									"  pm.expect(r.departureTime).to.eql('06:00:00');",
+									"  pm.expect(r.arrivalDate).to.eql('2026-11-06');",
+									"  pm.expect(r.arrivalTime).to.eql('08:35:00');",
+									"  pm.expect(r.airline).to.eql('AI');",
+									"  pm.expect(r.flightNumber).to.eql('805');",
+									"  pm.expect(r.aircraft).to.eql('320');",
+									"  pm.expect(r.stops).to.eql(0);",
+									"  pm.expect(r.duration).to.eql('2h 35m');",
+									"});",
+									"pm.test('fare detail resolved through fareComponentDescs', () => {",
+									"  pm.expect(r.cabin).to.eql('Y');",
+									"  pm.expect(r.bookingClass).to.eql('V');",
+									"  pm.expect(r.fareBasisCode).to.eql('V4O7RBIX');",
+									"  pm.expect(r.seatsAvailable).to.eql(9);",
+									"  pm.expect(r.refundable).to.eql(true);",
+									"  pm.expect(r.baggage).to.eql({ weight: 25, unit: 'KG' });",
+									"});",
+									"pm.test('references kept for pricing/booking (Sabre ids mapped onto the common names)', () => {",
+									"  pm.expect(r.journeyKey).to.eql('1');",
+									"  pm.expect(r.segmentKey).to.eql('1');",
+									"  pm.expect(r.fareAvailabilityKey).to.eql('1');",
+									"});",
+									"pm.test('one fare entry per passenger', () => {",
+									"  pm.expect(r.ADT).to.eql({ count: 2, baseFare: 3279, tax: 1053, total: 4332 });",
+									"  pm.expect(r.totalPrice).to.eql(8664);",
+									"  pm.expect(r.CHD).to.be.null;",
+									"  pm.expect(r.INF).to.be.null;",
+									"});",
+									"pm.test('isSumOfSector is null: BFM publishes no such flag', () => pm.expect(r.isSumOfSector).to.be.null);"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "Error cases",
+			"item": [
+				{
+					"name": "Unknown provider (expect 404)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"originCode\": \"BOM\",\n  \"destinationCode\": \"DEL\",\n  \"departureDate\": \"2026-11-06\",\n  \"passengers\": [{ \"passengerType\": \"ADT\", \"count\": 1 }]\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/transform/nope",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"transform",
+								"nope"
+							]
+						},
+						"description": "Unknown provider. The body names the providers this connector does know."
+					},
+					"response": []
+				},
+				{
+					"name": "Response that is not a BFM body (expect 422)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"data\": {\n    \"results\": []\n  }\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/transform/sabre/response",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"transform",
+								"sabre",
+								"response"
+							]
+						},
+						"description": "The transform refuses a payload that is not a groupedItineraryResponse instead of reporting 'no flights', so a wrong response can never be mistaken for an empty result set. A BFM body with an EMPTY itineraryGroups array is a valid 'no flights' answer and returns 200 with results: []."
+					},
+					"response": []
+				}
+			]
+		}
+	]
+}

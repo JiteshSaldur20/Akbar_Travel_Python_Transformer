@@ -3,7 +3,9 @@
 Receives the common ORBiS flight search payload, decodes and validates via
 msgspec, transforms it into the Sabre Bargain Finder Max (OTA_AirLowFareSearchRQ)
 payload, calls the Sabre REST API using a bearer token retrieved from Java ORBiS,
-and returns the raw Sabre response to Java ORBiS.
+and returns the answer in the canonical HOME RESPONSE format - the same structure
+``/transform/sabre/response`` produces, so Java ORBiS (and the frontend behind
+it) never sees Sabre's own field names.
 
 Latency notes
 -------------
@@ -80,6 +82,28 @@ def _json_response(content: bytes, status_code: int) -> Response:
         status_code=status_code,
         media_type="application/json",
     )
+
+
+def _to_home_response(transformer_pair, resp) -> bytes:
+    """Sabre response -> canonical home response, encoded as JSON bytes.
+
+    This is the conversion ``/transform/sabre/response`` performs, applied on the
+    search path so both Java ORBiS endpoints receive one structure.
+
+    A payload the transformer cannot read is passed through raw and logged rather
+    than failing the search: Sabre did answer, so the caller decides what to do
+    with it, and a conversion problem never becomes an opaque empty result set.
+    """
+    try:
+        payload = msgspec.json.decode(resp.content)
+        return msgspec.json.encode(transformer_pair.response.to_home_response(payload))
+    except (TransformationError, msgspec.DecodeError, ValueError, TypeError, KeyError) as exc:
+        logger.warning(
+            "Sabre response could not be converted to the home format (%s); "
+            "returning the provider payload unchanged",
+            exc,
+        )
+        return resp.content
 
 
 @router.post("/api/flights/search")
@@ -186,8 +210,15 @@ async def search(
         logger.warning("Sabre search failed: status=%s", resp.status_code)
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug("Sabre error body: %s", resp.text)
+        # Sabre's own error body is passed through so Java ORBiS can report the
+        # real reason instead of an empty result set.
+        return _json_response(resp.content, resp.status_code)
 
-    response = _json_response(resp.content, resp.status_code)
+    home_bytes = _to_home_response(transformer_pair, resp)
+
+    transformed_at = time.perf_counter()
+
+    response = Response(content=home_bytes, media_type="application/json")
 
     response_built = time.perf_counter()
     sent_at = time.perf_counter()
@@ -203,7 +234,7 @@ async def search(
             (started - started) * 1000,
             (dispatch_at - started) * 1000,
             (sabre_finished - dispatch_at) * 1000,
-            (response_built - sabre_finished) * 1000,
+            (transformed_at - sabre_finished) * 1000,
             (sent_at - response_built) * 1000,
         )
 

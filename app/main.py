@@ -12,6 +12,7 @@ from fastapi import FastAPI
 
 from app.api.search import close_sabre_client
 from app.api.search import router as search_router
+from app.api.transform import router as transform_router
 from app.core.config import get_settings
 from app.core.exceptions import register_exception_handlers
 from app.transformers.router import known_providers
@@ -51,6 +52,7 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
     register_exception_handlers(app)
+    app.include_router(transform_router, prefix=settings.api_prefix)
     app.include_router(search_router, prefix=settings.api_prefix)
 
     @app.get("/health")

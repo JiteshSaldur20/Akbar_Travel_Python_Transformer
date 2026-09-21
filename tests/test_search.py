@@ -12,6 +12,7 @@ from app.connectors.java_auth_client import JavaAuthClient
 from app.connectors.sabre_client import SabreClient
 from app.core.config import Settings
 from app.main import app
+from test_response_transformer import SABRE_RESPONSE
 
 client = TestClient(app)
 
@@ -45,9 +46,55 @@ def reset_client():
 
 
 def _sabre_success_body() -> bytes:
+    """A 200 body that is NOT a BFM groupedItineraryResponse.
+
+    Used to pin the fallback: a payload the response transformer cannot read is
+    passed through unchanged, so the provider's answer is never replaced by a
+    silent empty result set.
+    """
     return msgspec.json.encode(
         {"OTA_AirLowFareSearchRS": {"Version": "5.0.0", "PricedItineraries": []}}
     )
+
+
+def test_search_answers_in_the_home_response_format() -> None:
+    """A BFM answer is converted, so /api/flights/search and /transform agree."""
+
+    def mock_handler(request: httpx.Request) -> httpx.Response:
+        if "/internal/providers/SABRE/auth" in str(request.url):
+            return httpx.Response(
+                200,
+                content=msgspec.json.encode(
+                    {
+                        "providerCode": "SABRE",
+                        "accessToken": "mock-java-provided-sabre-token-99999",
+                        "tokenType": "Bearer",
+                        "expiresAt": "2026-10-01T12:00:00Z",
+                        "pcc": "86AD",
+                    }
+                ),
+                headers={"Content-Type": "application/json"},
+            )
+        if "v5/shop/flights" in str(request.url):
+            return httpx.Response(
+                200,
+                content=msgspec.json.encode(SABRE_RESPONSE),
+                headers={"Content-Type": "application/json"},
+            )
+        return httpx.Response(404)
+
+    _make_client(httpx.MockTransport(mock_handler))
+
+    resp = client.post("/api/flights/search", json=JAVA_COMMON_REQUEST)
+    assert resp.status_code == 200
+
+    resp_data = msgspec.json.decode(resp.content)
+    assert resp_data["operation"] == "FLIGHT_SEARCH"
+    assert resp_data["currency"] == "INR"
+    assert len(resp_data["results"]) == 1
+    assert resp_data["results"][0]["provider"] == "SABRE"
+    # Sabre's own field names never reach the caller.
+    assert "groupedItineraryResponse" not in resp_data
 
 
 def _make_client(transport: httpx.BaseTransport) -> None:
