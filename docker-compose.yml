@@ -1,0 +1,33 @@
+services:
+  sabre-transformer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: akbt-sabre-transformer
+    restart: unless-stopped
+    environment:
+      JAVA_INTERNAL_URL: ${JAVA_INTERNAL_URL:-http://localhost:8080}
+      JAVA_CONNECT_TIMEOUT_S: 5.0
+      JAVA_READ_TIMEOUT_S: 10.0
+      SABRE_BASE_URL: ${SABRE_BASE_URL:-https://api.cert.platform.sabre.com}
+      SABRE_SEARCH_PATH: ${SABRE_SEARCH_PATH:-v5/offers/shop}
+      SABRE_CONNECT_TIMEOUT_S: 10.0
+      SABRE_READ_TIMEOUT_S: 30.0
+      SEARCH_ENABLE_ATPCO: ${SEARCH_ENABLE_ATPCO:-true}
+      SEARCH_ENABLE_NDC: ${SEARCH_ENABLE_NDC:-false}
+      SEARCH_NUMBER_OF_TRIPS: ${SEARCH_NUMBER_OF_TRIPS:-10}
+      SEARCH_REQUEST_TYPE: ${SEARCH_REQUEST_TYPE:-50ITINS}
+      HTTP_MAX_CONNECTIONS: 100
+      HTTP_MAX_KEEPALIVE_CONNECTIONS: 20
+      HTTP_KEEPALIVE_EXPIRY_S: 30.0
+      AUTH_TOKEN_SAFETY_BUFFER_S: 30.0
+      SEARCH_TIMING_LOG: "true"
+      DEBUG: "false"
+    ports:
+      - "${SABRE_PORT:-8090}:8090"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8090/health\")' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
