@@ -5,8 +5,10 @@ Only confirmed mappings are implemented (see the project Postman collection
 marked TODO and not invented.
 
 The PCC (PseudoCityCode) is received from Java ORBiS via the auth endpoint
-response, keeping all credentials in the Java DB. The bearer token is injected
-by :class:`app.connectors.sabre_client.SabreClient` via the Authorization header.
+response, keeping all credentials in the Java DB. It is mandatory in the BFM
+request body, so a missing PCC fails fast instead of being dropped. The bearer
+token is injected by :class:`app.connectors.sabre_client.SabreClient` via the
+Authorization header.
 
 cabin, currency, refundable, and filters are validated as part of the
 connector payload but intentionally unmapped (no confirmed Sabre mapping).
@@ -18,6 +20,7 @@ import logging
 from typing import Any
 
 from app.core.config import get_settings
+from app.core.exceptions import TransformationError
 from app.schemas.home_payload import HomeSearchRequest
 from app.transformers.base import RequestTransformer
 
@@ -48,19 +51,36 @@ class SabreRequestTransformer(RequestTransformer):
         origin_destination = _build_origin_destination_information(home)
 
         # PCC (PseudoCityCode) is required in the BFM request body by Sabre.
-        # It comes from Java ORBiS auth endpoint (provider_credential.pcc in DB).
+        # It comes from Java ORBiS auth endpoint (provider_credential.pcc in DB,
+        # env fallback) and must be the PCC the bearer token was minted for.
+        # Without it Sabre answers HTTP 400 "Unable to determine
+        # PseudoCityCode", so an empty PCC is a configuration error - never
+        # silently send the request without it.
+        normalized_pcc = (pcc or "").strip().upper()
+        if not normalized_pcc:
+            raise TransformationError(
+                "Sabre PCC (PseudoCityCode) is missing: it is required in "
+                "POS.Source[0] and must be configured for the provider "
+                "credential in Java ORBiS"
+            )
+
         source: dict[str, object] = {
+            "PseudoCityCode": normalized_pcc,
             "RequestorID": {
                 "Type": "1",
                 "ID": "1",
                 "CompanyName": {"Code": "TN"},
             },
         }
-        if pcc:
-            source["PseudoCityCode"] = pcc
 
         pos = {"Source": [source]}
 
+        # NOTE: the stop/connection limit (max_connections) is intentionally
+        # not sent. Sabre's BFM v5 JSON schema rejects additional properties:
+        #   JSON_ADAPTER: /OTA_AirLowFareSearchRQ/TravelPreferences/TPA_Extensions:
+        #   property 'MaxConnections' is not defined in the schema
+        # No confirmed mapping exists yet, so the filter stays unused rather
+        # than making every shop request invalid.
         tpa: dict[str, Any] = {
             "NumTrips": {"Number": settings.search_number_of_trips},
             "DataSources": {
@@ -87,7 +107,7 @@ class SabreRequestTransformer(RequestTransformer):
                 "TravelerInfoSummary": traveler_summary,
                 "TPA_Extensions": {
                     "IntelliSellTransaction": {
-                        "RequestType": {"Name": "50ITINS"}
+                        "RequestType": {"Name": settings.search_request_type}
                     }
                 },
             }
@@ -99,7 +119,7 @@ class SabreRequestTransformer(RequestTransformer):
             settings.search_number_of_trips,
             settings.search_enable_atpco,
             settings.search_enable_ndc,
-            pcc,
+            normalized_pcc,
         )
         return result
 

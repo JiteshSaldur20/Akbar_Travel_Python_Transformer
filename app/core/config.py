@@ -59,6 +59,10 @@ class Settings:
 
     # --- BFM request tuning (shapes the ITA request; NOT credentials) ------
     search_number_of_trips: int = 10
+    # IntelliSell transaction type: how many itineraries BFM is asked to shop.
+    # This is the biggest latency lever on the Sabre side (fewer itineraries =
+    # less work), but the value must be one your PCC is provisioned for.
+    search_request_type: str = "50ITINS"
     search_max_connections: int = 4
     search_fares_per_journey: int = 4
     search_prefer_ndc_on_tie: bool = False
@@ -112,6 +116,7 @@ def get_settings() -> Settings:
         auth_token_safety_buffer_s=get_float("AUTH_TOKEN_SAFETY_BUFFER_S", 30.0),
         search_timing_log=get_bool("SEARCH_TIMING_LOG", True),
         search_number_of_trips=get_int("SEARCH_NUMBER_OF_TRIPS", 10),
+        search_request_type=get_val("SEARCH_REQUEST_TYPE", "50ITINS"),
         search_max_connections=get_int("SEARCH_MAX_CONNECTIONS", 4),
         search_fares_per_journey=get_int("SEARCH_FARES_PER_JOURNEY", 4),
         search_prefer_ndc_on_tie=get_bool("SEARCH_PREFER_NDC_ON_TIE", False),

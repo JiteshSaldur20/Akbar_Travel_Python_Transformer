@@ -74,18 +74,25 @@ Interactive docs: http://127.0.0.1:8090/docs
 |---------|---------|--------|
 | `JAVA_INTERNAL_URL` | `http://localhost:8080` | Java ORBiS token endpoint base |
 | `SABRE_BASE_URL` | `https://api.cert.platform.sabre.com` | Sabre REST host |
-| `SABRE_SEARCH_PATH` | `v5/shop/flights` | BFM path |
+| `SABRE_SEARCH_PATH` | `v5/offers/shop` | BFM path |
 | `SABRE_CONNECT_TIMEOUT_S` / `SABRE_READ_TIMEOUT_S` | `10` / `30` | Sabre connection and read timeouts |
 | `HTTP_MAX_CONNECTIONS` | `100` | Outbound pool size |
 | `HTTP_MAX_KEEPALIVE_CONNECTIONS` | `20` | Idle keep-alive sockets retained |
 | `HTTP_KEEPALIVE_EXPIRY_S` | `30.0` | Idle socket lifetime before close |
 | `AUTH_TOKEN_SAFETY_BUFFER_S` | `30.0` | Refresh the cached token this long before expiry |
 | `SEARCH_TIMING_LOG` | `true` | Per-stage latency breakdown per search |
-| `SEARCH_NUMBER_OF_TRIPS` / `SEARCH_MAX_CONNECTIONS` / `SEARCH_FARES_PER_JOURNEY` / `SEARCH_PREFER_NDC_ON_TIE` / `SEARCH_ENABLE_ATPCO` / `SEARCH_ENABLE_NDC` / `SEARCH_MAX_UPSELLS` / `SEARCH_MULTIPLE_BRANDED_FARES` | see `app/core/config.py` | Shape the BFM request (NOT credentials) |
+| `SEARCH_NUMBER_OF_TRIPS` | `10` | Trips (itineraries) BFM should return - a direct latency lever |
+| `SEARCH_REQUEST_TYPE` | `50ITINS` | IntelliSell transaction type - the biggest BFM latency lever, but it must be a value your PCC is provisioned for |
+| `SEARCH_MAX_CONNECTIONS` / `SEARCH_FARES_PER_JOURNEY` / `SEARCH_PREFER_NDC_ON_TIE` / `SEARCH_ENABLE_ATPCO` / `SEARCH_ENABLE_NDC` / `SEARCH_MAX_UPSELLS` / `SEARCH_MULTIPLE_BRANDED_FARES` | see `app/core/config.py` | Shape the BFM request (NOT credentials) |
 
 Notes:
 - Sabre username/password/PCC are configured in the **Java backend DB**
-  (`provider_credential` rows), never here.
+  (`provider_credential` rows, with `SABRE_*` env fallback), never here. The PCC
+  is read back from Java's auth response and sent in the POS.
+- Getting a latency number per hop: set `SEARCH_TIMING_LOG=true` here (it prints
+  a per-stage breakdown and the Sabre round trip), and read the Java log lines
+  `<CODE> connector responded in <n> ms` plus `TOTAL ~<n> ms` - the providers are
+  called concurrently, so the total tracks the **slowest** provider.
 - Do **not** use `--workers`/`--reload` under load on Windows — each worker gets
   a `SelectorEventLoop` with a 512-socket cap. Run a single process:
   `--no-access-log --http httptools`.
@@ -128,12 +135,20 @@ traces:
   (1 leg when no return date, else outbound + inbound).
 - `ADT`/`CHD`/`INF` -> `PassengerTypeQuantity` (zero counts omitted; empty ->
   single ADT).
-- `filters.stops.max` -> `TravelPreferences.TPA_Extensions.MaxConnections`.
 - `NumTrips`, `DataSources` (ATPCO/NDC), `PreferNDCSourceOnTie`, `NDCIndicators`,
-  `IntelliSellTransaction` from service settings.
+  `IntelliSellTransaction.RequestType` from service settings.
+- `PseudoCityCode` from the Java ORBiS auth response -> `POS.Source[0]`. It is
+  **mandatory**: a sessionless (OAuth) shop call has no session PCC, and Sabre
+  answers `400 ... Unable to determine PseudoCityCode` without it. A missing
+  PCC fails fast with `422 transformation_failed` instead of being dropped.
 - Deliberately **not** mapped (no confirmed Sabre mapping): `cabin`, `currency`,
-  `refundable`, `filters.airlines`. No PCC/token in the body — auth rides the
-  `Authorization` header; PCC stays in Java.
+  `refundable`, `filters.airlines`, and `filters.stops.max`. Sabre's BFM v5 JSON
+  schema rejects additional properties, and `MaxConnections` is not defined under
+  `TravelPreferences.TPA_Extensions`:
+  `JSON_ADAPTER: ... property 'MaxConnections' is not defined in the schema`.
+  Do not re-add it without a schema-confirmed replacement.
+- Credentials (username/password) never enter the body - auth rides the
+  `Authorization` header.
 
 ## Tests
 

@@ -11,8 +11,11 @@ import json
 import pytest
 
 from app.core.config import Settings
+from app.core.exceptions import TransformationError
 from app.schemas.home_payload import HomeSearchRequest, Passenger
 from app.transformers.sabre_request_transformer import SabreRequestTransformer
+
+TEST_PCC = "86AD"
 
 
 def make_home(**overrides) -> HomeSearchRequest:
@@ -49,6 +52,7 @@ def build_request(
     monkeypatch: pytest.MonkeyPatch,
     home_overrides: dict | None = None,
     settings_overrides: dict | None = None,
+    pcc: str | None = TEST_PCC,
 ) -> dict:
     """Build a Sabre BFM body from a home request + settings override."""
     settings = make_settings(**(settings_overrides or {}))
@@ -57,7 +61,7 @@ def build_request(
         lambda: settings,
     )
     return SabreRequestTransformer().to_provider_request(
-        make_home(**(home_overrides or {}))
+        make_home(**(home_overrides or {})), pcc=pcc
     )
 
 
@@ -116,15 +120,13 @@ def test_defaults_to_single_adt_when_no_passengers(
     assert ptq == [{"Code": "ADT", "Quantity": 1}]
 
 
-def test_no_pcc_or_credentials_in_transformed_request(
+def test_pos_carries_pcc_but_no_credentials(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The BFM body must not carry credentials/tokens; auth is a header."""
+    """The BFM body must carry the PCC but no credentials/tokens (auth is a header)."""
     body = build_request(monkeypatch)
     serialized = json.dumps(body).lower()
 
-    assert "pseudocitycode" not in serialized
-    assert "pcc" not in serialized
     assert "token" not in serialized
     assert "authorization" not in serialized
     assert "password" not in serialized
@@ -142,7 +144,25 @@ def test_requestor_id_shape_confirmed_by_collection(
         "ID": "1",
         "CompanyName": {"Code": "TN"},
     }
-    assert "PseudoCityCode" not in source
+    # Sabre rejects the request with HTTP 400 "Unable to determine
+    # PseudoCityCode" when this is absent.
+    assert source["PseudoCityCode"] == TEST_PCC
+
+
+def test_pcc_is_trimmed_and_uppercased(monkeypatch: pytest.MonkeyPatch) -> None:
+    body = build_request(monkeypatch, pcc=" 86ad ")
+    source = body["OTA_AirLowFareSearchRQ"]["POS"]["Source"][0]
+
+    assert source["PseudoCityCode"] == TEST_PCC
+
+
+@pytest.mark.parametrize("pcc", [None, "", "   "])
+def test_missing_pcc_fails_fast(
+    monkeypatch: pytest.MonkeyPatch, pcc: str | None
+) -> None:
+    """A BFM request without a PCC is always rejected by Sabre, so never send it."""
+    with pytest.raises(TransformationError, match="PseudoCityCode"):
+        build_request(monkeypatch, pcc=pcc)
 
 
 def test_data_sources_reflect_settings(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -219,7 +239,9 @@ def test_unmapped_fields_absent_from_sabre_request(
     assert "airlines" not in serialized
 
 
-def test_intellisell_transaction_present(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_intellisell_transaction_defaults_to_50itins(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     body = build_request(monkeypatch)
     ext = body["OTA_AirLowFareSearchRQ"]["TPA_Extensions"]
 
@@ -228,25 +250,41 @@ def test_intellisell_transaction_present(monkeypatch: pytest.MonkeyPatch) -> Non
     }
 
 
-def test_max_connections_from_filters_when_provided(
+def test_intellisell_request_type_is_configurable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """The ITINS bucket is the main BFM latency lever, so it is tunable via
+    SEARCH_REQUEST_TYPE without a code change."""
+    body = build_request(
+        monkeypatch, settings_overrides={"search_request_type": "20ITINS"}
+    )
+    ext = body["OTA_AirLowFareSearchRQ"]["TPA_Extensions"]
+
+    assert ext["IntelliSellTransaction"] == {"RequestType": {"Name": "20ITINS"}}
+
+
+@pytest.mark.parametrize("max_connections", [None, 0, 2])
+def test_stop_limit_is_not_sent_to_sabre(
+    monkeypatch: pytest.MonkeyPatch, max_connections: int | None
+) -> None:
+    """Sabre's BFM v5 schema rejects additional TPA_Extensions properties:
+
+        JSON_ADAPTER: /OTA_AirLowFareSearchRQ/TravelPreferences/TPA_Extensions:
+        property 'MaxConnections' is not defined in the schema
+
+    so the stop filter must not leak into the request until a confirmed
+    mapping exists.
+    """
     settings = make_settings()
     monkeypatch.setattr(
         "app.transformers.sabre_request_transformer.get_settings",
         lambda: settings,
     )
-    body = SabreRequestTransformer().to_provider_request(make_home(), max_connections=0)
-
-    tpa = body["OTA_AirLowFareSearchRQ"]["TravelPreferences"]["TPA_Extensions"]
-    assert tpa["MaxConnections"] == {"Number": 0}
-
-
-def test_max_connections_defaults_to_settings(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    body = build_request(
-        monkeypatch, settings_overrides={"search_max_connections": 2}
+    body = SabreRequestTransformer().to_provider_request(
+        make_home(), max_connections=max_connections, pcc=TEST_PCC
     )
+
     tpa = body["OTA_AirLowFareSearchRQ"]["TravelPreferences"]["TPA_Extensions"]
-    assert tpa["MaxConnections"] == {"Number": 2}
+    assert "MaxConnections" not in tpa
+    assert "MaxStopsQuantity" not in tpa
+    assert "maxConnections" not in json.dumps(body)

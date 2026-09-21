@@ -62,6 +62,18 @@ def close_sabre_client() -> None:
         _sabre_client_instance = None
 
 
+# tripType values that mean "no return leg". ORBiS validates tripType against
+# ONE_WAY / ROUND_TRIP / MULTI_CITY, but the connector accepts any spelling so a
+# caller that sends "one-way" is not shopped as a round trip by mistake.
+_ONE_WAY_TRIP_TYPES = {"ONE_WAY", "ONEWAY"}
+
+
+def _is_one_way(trip_type: str | None) -> bool:
+    """True only when the caller explicitly asked for a one-way trip."""
+    normalized = (trip_type or "").strip().upper().replace("-", "_").replace(" ", "_")
+    return normalized in _ONE_WAY_TRIP_TYPES
+
+
 def _json_response(content: bytes, status_code: int) -> Response:
     return Response(
         content=content,
@@ -92,11 +104,12 @@ async def search(
         )
 
     logger.info(
-        "Sabre search request: %s->%s %s..%s ADT=%s CHD=%s INF=%s",
+        "Sabre search request: %s->%s %s..%s tripType=%s ADT=%s CHD=%s INF=%s",
         common_req.from_,
         common_req.to,
         common_req.dateFrom,
         common_req.dateTo,
+        common_req.tripType,
         common_req.adt,
         common_req.chd,
         common_req.inf,
@@ -115,11 +128,25 @@ async def search(
     if not passengers:
         passengers.append(Passenger(ptc="ADT", count=1))
 
+    # A ONE_WAY search must not be shopped as a round trip: a second leg costs
+    # Sabre a whole extra set of itineraries to shop and price (roughly double
+    # the BFM response time) and returns journeys the caller did not ask for.
+    # tripType is authoritative when the caller sends one; when it is absent the
+    # previous behaviour (a return leg whenever dateTo is present) is kept.
+    return_date = common_req.dateTo
+    if _is_one_way(common_req.tripType):
+        if return_date:
+            logger.info(
+                "tripType=ONE_WAY: ignoring dateTo=%s (no return leg is shopped)",
+                return_date,
+            )
+        return_date = None
+
     home = HomeSearchRequest(
         origin=common_req.from_,
         destination=common_req.to,
         depart_date=common_req.dateFrom,
-        return_date=common_req.dateTo,
+        return_date=return_date,
         cabin=common_req.cabin,
         currency=common_req.currency,
         promotion_code=common_req.promotionCode,
